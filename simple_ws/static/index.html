@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>WS Live Chart</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 24px; }
+    #status { margin-bottom: 8px; }
+    canvas { max-width: 100%; }
+  </style>
+  <!-- Chart.js via CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <h1>WebSocket → Live Chart</h1>
+  <div id="status">Connecting…</div>
+  <div id="current-value">—</div>
+  <canvas id="chart" height="120"></canvas>
+
+  <script>
+    // Build ws:// or wss:// based on current page
+    const wsUrl = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws";
+
+    const ctx = document.getElementById("chart");
+    const data = {
+      labels: [],            // human-readable timestamps
+      datasets: [{
+        label: "value",
+        data: [],            // numeric values
+        borderWidth: 2,
+        pointRadius: 0,
+        tension: 0.2,
+      }]
+    };
+    const chart = new Chart(ctx, {
+      type: "line",
+      data,
+      options: {
+        animation: false,
+        responsive: true,
+        scales: {
+          x: { ticks: { maxRotation: 0, autoSkip: true } },
+          y: { beginAtZero: false }
+        },
+        plugins: { legend: { display: false } }
+      }
+    });
+
+    const statusEl = document.getElementById("status");
+    let ws;
+
+    function connect() {
+      ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => { statusEl.textContent = "Connected"; };
+      ws.onclose = () => { statusEl.textContent = "Disconnected — retrying in 1s…"; setTimeout(connect, 1000); };
+      ws.onerror = () => { statusEl.textContent = "Error — retrying…"; ws.close(); };
+
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          const ts = new Date(msg.ts * 1000);
+          const label = ts.toLocaleTimeString();
+          const value = msg.value;
+          statusEl.textContent = "Connected";
+          document.getElementById("current-value").textContent = (typeof value === 'number' ? value.toFixed(2) : value);
+
+          data.labels.push(label);
+          data.datasets[0].data.push(value);
+
+          // keep the last N points to avoid unbounded growth
+          const N = 120;
+          if (data.labels.length > N) {
+            data.labels.splice(0, data.labels.length - N);
+            data.datasets[0].data.splice(0, data.datasets[0].data.length - N);
+          }
+          chart.update();
+        } catch(e) {
+          console.error("Bad message:", e);
+        }
+      };
+    }
+
+    connect();
+  </script>
+</body>
+</html>
