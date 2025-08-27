@@ -6,7 +6,6 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.116.1",
-    "mitmproxy>=12.1.2",
     "playwright>=1.54.0",
     "pytest>=8.4.1",
     "pytest-playwright>=0.7.0",
