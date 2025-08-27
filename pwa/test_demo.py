@@ -1,5 +1,11 @@
 def test_ticks(page):
-    page.goto("http://localhost:8000")
+    page.goto("https://staging-my.simuxm.com/")
+    page.click('xpath=//button[contains(text(), "Accept All")]')
+    page.fill('xpath=//input[@inputmode="email"]', 'qaf564cb10@xm.com')
+    page.fill('xpath=//input[@type="password"]', 'Password$123')
+    page.click('xpath=//button[@type="submit"]')
+    page.wait_for_timeout(2_000)
+    page.goto('https://staging-my.simuxm.com/symbol-info/GOLDm%23')
 
     # make GOLDm# tick use a constant mid-price, ba = [1234.5, 1234.5]
     page.evaluate("""() => {
@@ -9,6 +15,8 @@ def test_ticks(page):
       c.targetSymbol = 'GOLDm#';    // optional; defaults to GOLDm#
       c.baMode = 'same';            // or 'spread'
     }""")
+
+    page.wait_for_timeout(20_000)
 
     # switch to increasing series and widen the book via spread
     page.evaluate("""() => {
@@ -20,3 +28,5 @@ def test_ticks(page):
       c.baMode = 'spread';
       c.spreadDelta = 3;            // ba becomes [target-3, target+3]
     }""")
+
+    page.wait_for_timeout(20_000)
