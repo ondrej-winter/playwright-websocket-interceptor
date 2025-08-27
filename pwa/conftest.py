@@ -40,27 +40,38 @@ INIT_SCRIPT_TEMPLATE = r"""
     };
 
     // --- helpers ------------------------------------------------------------
+    const setBa = (tk, target) => {
+      if (!tk || !Array.isArray(tk.ba) || tk.ba.length < 2) return false;
+      const t = Number(target);
+      if (cfg.baMode === "spread") {
+        const d = Number(cfg.spreadDelta || 0);
+        tk.ba = [t - d, t + d];
+      } else {
+        tk.ba = [t, t];
+      }
+      return true;
+    };
+
+    // Supports both shapes:
+    //  A) {"messages":[{"tk":{ "sl":"GOLDm#", "ba":[..] }, ...}]}
+    //  B) {"messages":[{"ts":{"tk":{ "sl":"GOLDm#", "ba":[..] }, ...}, ...}]}
     const rewriteBaForSymbol = (obj, target) => {
       if (!obj || typeof obj !== "object") return false;
 
       let changed = false;
       const sym = String(cfg.targetSymbol);
 
-      // Expect shape: { messages: [ { tk: { sl: "GOLDm#", ba: [x, y], ... }, ... }, ... ] }
       const msgs = obj.messages;
       if (Array.isArray(msgs)) {
         for (const m of msgs) {
-          const tk = m && m.tk;
-          if (tk && tk.sl === sym && Array.isArray(tk.ba) && tk.ba.length >= 2) {
-            const t = Number(target);
-            if (cfg.baMode === "spread") {
-              const d = Number(cfg.spreadDelta || 0);
-              tk.ba = [t - d, t + d];
-            } else {
-              // "same" (default)
-              tk.ba = [t, t];
-            }
-            changed = true;
+          // direct under m.tk
+          if (m && m.tk && m.tk.sl === sym) {
+            if (setBa(m.tk, target)) changed = true;
+          }
+          // nested under m.ts.tk  (your provided format)
+          const tsTk = m && m.ts && m.ts.tk;
+          if (tsTk && tsTk.sl === sym) {
+            if (setBa(tsTk, target)) changed = true;
           }
         }
       }
@@ -106,7 +117,7 @@ INIT_SCRIPT_TEMPLATE = r"""
             }
           }
 
-          // Domain-specific GOLDm# ba rewrite (also covers your screenshot payload)
+          // Domain-specific GOLDm# ba rewrite (handles m.ts.tk as in your sample)
           if (rewriteBaForSymbol(obj, target)) touched = true;
 
           if (touched) return JSON.stringify(obj);
@@ -134,7 +145,7 @@ INIT_SCRIPT_TEMPLATE = r"""
           }
           return origAdd(type, listener, options);
         };
-        Object.defineProperty(ws, "onmessage", {
+      Object.defineProperty(ws, "onmessage", {
           configurable: true,
           enumerable: true,
           get() { return this.__onmessage_original || null; },
@@ -214,14 +225,11 @@ INIT_SCRIPT_TEMPLATE = r"""
 })();
 """
 
-
-def build_init_script(
-    initial_mode: str = "untouched",
-    constant_value: float = 0.4,
-    start_value: float = 0.0,
-    step_value: float = 0.1,
-    target_symbol: str = "GOLDm#",
-) -> str:
+def build_init_script(initial_mode: str = "untouched",
+                      constant_value: float = 0.4,
+                      start_value: float = 0.0,
+                      step_value: float = 0.1,
+                      target_symbol: str = "GOLDm#") -> str:
     """Render the INIT_SCRIPT_TEMPLATE with runtime data safely quoted."""
     return INIT_SCRIPT_TEMPLATE % {
         "initial_mode": json.dumps(initial_mode),
@@ -231,19 +239,14 @@ def build_init_script(
         "target_symbol": json.dumps(target_symbol),
     }
 
-
 @pytest.fixture(autouse=True, scope="function")
 def install_ws_interceptor(page):
     """Automatically inject WS/SharedWorker interception script before page code runs."""
-    page.add_init_script(
-        build_init_script(
-            initial_mode="untouched",
-            constant_value=0.4,
-            start_value=0.0,
-            step_value=0.1,
-            target_symbol="GOLDm#",
-        )
-    )
+    page.add_init_script(build_init_script(
+        initial_mode="untouched",
+        constant_value=0.4,
+        start_value=0.0,
+        step_value=0.1,
+        target_symbol="GOLDm#",
+    ))
     yield
-
-# {"messages":[{"ts":{"tk":{"sl":"GOLDm#","ba":[3375.73,3375.93],"tt":"2025-08-27T13:46:04.845Z"},"tc":{"id":{"msb":"149680298586098715","lsb":"9859088212071032590"},"tt":"2025-08-27T13:46:04.849Z"},"sid":50}}],"tc":{"id":{"msb":"4091721957645959180","lsb":"12571568922580094520"},"tt":"2025-08-27T13:46:04.869077725Z"}}
