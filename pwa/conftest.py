@@ -1,4 +1,3 @@
-# conftest.py
 import pytest
 
 INIT_JS = r"""
@@ -107,7 +106,6 @@ INIT_JS = r"""
 """
 
 @pytest.fixture(autouse=True, scope="function")
-def install_us100_sharedworker_proxy(context):
-  # Context-level injection ensures we hook BEFORE any workers are created.
-  context.add_init_script(INIT_JS)
+def install_us100_sharedworker_proxy(page):
+  page.add_init_script(INIT_JS)
   yield

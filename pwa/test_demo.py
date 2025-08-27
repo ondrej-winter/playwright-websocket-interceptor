@@ -38,4 +38,6 @@ def test_ticks(page):
     page.fill('xpath=//input[@inputmode="email"]', 'qaf564cb10@xm.com')
     page.fill('xpath=//input[@type="password"]', 'Password$123')
     page.click('xpath=//button[@type="submit"]')
+    page.wait_for_timeout(2_000)
+
     page.wait_for_timeout(2_000_000)
