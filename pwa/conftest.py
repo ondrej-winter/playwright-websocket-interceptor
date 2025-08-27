@@ -1,141 +1,113 @@
 # conftest.py
 import pytest
 
-INIT_SCRIPT = r"""
+INIT_JS = r"""
 (() => {
-  try {
-    if (window.__ws_logger_installed__) return;
-    window.__ws_logger_installed__ = true;
+  if (window.__sharedWorkerProxyInstalled__) return;
+  window.__sharedWorkerProxyInstalled__ = true;
 
-    const logPrefix = "[ws-interceptor]";
-    const td = new TextDecoder();
+  // Runtime config (you can tweak from DevTools)
+  window.__US100_cfg = Object.assign({
+    symbol: "US100Cash",
+    forcedBa: [950, 1050],
+  }, window.__US100_cfg || {});
 
-    const logData = (tag, data) => {
-      // Pretty print strings/JSON, support Blob/ArrayBuffer
-      const print = (txtOrObj) => console.log(`${logPrefix} ${tag}:`, txtOrObj);
-      try {
-        if (typeof data === "string") {
-          try { print(JSON.parse(data)); } catch { print(data); }
-          return;
-        }
-        if (data instanceof Blob) {
-          data.text().then(t => { try { print(JSON.parse(t)); } catch { print(t); } });
-          return;
-        }
-        if (data instanceof ArrayBuffer) {
-          const t = td.decode(new Uint8Array(data));
-          try { print(JSON.parse(t)); } catch { print(t); }
-          return;
-        }
-      } catch {}
-      print(data);
-    };
-
-    // -------- WebSocket logging (constructor patch) --------
-    const OrigWS = window.WebSocket;
-    if (OrigWS && !OrigWS.__logged__) {
-      const PatchedWS = function(url, protocols) {
-        const ws = new OrigWS(url, protocols);
-
-        // Log outgoing
-        const origSend = ws.send;
-        ws.send = function(data) {
-          logData("send", data);
-          return origSend.call(this, data);
-        };
-
-        // Log incoming for addEventListener
-        const origAdd = ws.addEventListener.bind(ws);
-        ws.addEventListener = function(type, listener, options) {
-          if (type === "message" && typeof listener === "function") {
-            const wrapped = (ev) => { logData("recv", ev.data); return listener.call(this, ev); };
-            return origAdd(type, wrapped, options);
-          }
-          return origAdd(type, listener, options);
-        };
-
-        // Log incoming for onmessage
-        Object.defineProperty(ws, "onmessage", {
-          configurable: true,
-          enumerable: true,
-          get() { return this.__onmessage_original || null; },
-          set(fn) {
-            this.__onmessage_original = fn;
-            if (typeof fn === "function") {
-              const wrapped = (ev) => { logData("recv", ev.data); return fn.call(ws, ev); };
-              // ensure we don't double-attach
-              if (this.__onmessage_wrapped) {
-                try { ws.removeEventListener("message", this.__onmessage_wrapped); } catch {}
-              }
-              this.__onmessage_wrapped = wrapped;
-              ws.addEventListener("message", wrapped);
-            }
-          },
-        });
-
-        return ws;
-      };
-      PatchedWS.prototype = OrigWS.prototype;
-      PatchedWS.__logged__ = true;
-      Object.defineProperty(window, "WebSocket", { value: PatchedWS });
-      console.log(`${logPrefix} active: logging WS send/recv`);
-    }
-
-    // -------- SharedWorker port logging (if app uses a worker) --------
-    const OrigSW = window.SharedWorker;
-    if (OrigSW && !OrigSW.__logged__) {
-      const PatchedSW = function(...args) {
-        const worker = new OrigSW(...args);
-        const port = worker.port;
-        if (port) {
-          const origPost = port.postMessage;
-          port.postMessage = function(data, ...rest) {
-            logData("port->postMessage", data);
-            return origPost.call(this, data, ...rest);
-          };
-
-          const origAdd = port.addEventListener.bind(port);
-          port.addEventListener = function(type, listener, options) {
-            if (type === "message" && typeof listener === "function") {
-              const wrapped = (ev) => { logData("port<-message", ev.data); return listener.call(this, ev); };
-              return origAdd(type, wrapped, options);
-            }
-            return origAdd(type, listener, options);
-          };
-
-          Object.defineProperty(port, "onmessage", {
-            configurable: true,
-            enumerable: true,
-            get() { return this.__onmessage_original || null; },
-            set(fn) {
-              this.__onmessage_original = fn;
-              if (typeof fn === "function") {
-                const wrapped = (ev) => { logData("port<-message", ev.data); return fn.call(port, ev); };
-                if (this.__onmessage_wrapped) {
-                  try { port.removeEventListener("message", this.__onmessage_wrapped); } catch {}
-                }
-                this.__onmessage_wrapped = wrapped;
-                port.addEventListener("message", wrapped);
-              }
-            },
-          });
-
-          if (typeof port.start === "function") { try { port.start(); } catch {} }
-        }
-        return worker;
-      };
-      PatchedSW.prototype = OrigSW.prototype;
-      PatchedSW.__logged__ = true;
-      Object.defineProperty(window, "SharedWorker", { value: PatchedSW });
-      console.log(`${logPrefix} active: logging SharedWorker port messages`);
-    }
-  } catch (e) {
-    console.log("[init ERROR]", String(e && e.stack || e));
+  // Replace SharedWorker constructor with a proxy that bootstraps the worker.
+  const OrigSW = window.SharedWorker;
+  if (!OrigSW) {
+    console.log("[us100-proxy] No SharedWorker in this environment");
+    return;
   }
+  if (OrigSW.__us100Proxy__) return;
+
+  const mkBootstrap = (origUrl, cfg) => `
+    // ---- bootstrap runs INSIDE the SharedWorker global scope ----
+    (function(){
+      var __CFG = { symbol: ${JSON.stringify(cfg.symbol)}, forcedBa: ${JSON.stringify(cfg.forcedBa)} };
+
+      // Deep scan: find any object with { sl: string, ba: [bid, ask] } and rewrite when sl===symbol
+      function mutateUS100Deep(root){
+        var changed = false, stack = [root], seen = typeof WeakSet!=="undefined" ? new WeakSet() : { has(){return false;}, add(){} };
+        while (stack.length){
+          var node = stack.pop();
+          if (!node || typeof node !== "object") continue;
+          try { if (seen.has(node)) continue; seen.add(node); } catch(e) {}
+          if (typeof node.sl === "string" && Array.isArray(node.ba) && node.ba.length >= 2){
+            if (node.sl === __CFG.symbol){
+              node.ba[0] = __CFG.forcedBa[0];
+              node.ba[1] = __CFG.forcedBa[1];
+              changed = true;
+            }
+          }
+          if (Array.isArray(node)){
+            for (var i=0;i<node.length;i++) stack.push(node[i]);
+          } else {
+            for (var k in node) if (Object.prototype.hasOwnProperty.call(node,k)) stack.push(node[k]);
+          }
+        }
+        return changed;
+      }
+
+      // Patch MessagePort.prototype.postMessage BEFORE importing the real worker script,
+      // so even early posts during script evaluation are intercepted.
+      (function(){
+        var MP = self.MessagePort && self.MessagePort.prototype;
+        if (!MP || MP.__us100_mutated__) return;
+        var origPost = MP.postMessage;
+        MP.postMessage = function(data, transfer){
+          try {
+            if (data && typeof data === "object"){
+              mutateUS100Deep(data);
+            } else if (typeof data === "string"){
+              try {
+                var obj = JSON.parse(data);
+                if (mutateUS100Deep(obj)) data = JSON.stringify(obj);
+              } catch(_){}
+            }
+          } catch(_){}
+          return arguments.length > 1 ? origPost.call(this, data, transfer) : origPost.call(this, data);
+        };
+        MP.__us100_mutated__ = true;
+      })();
+
+      // Import the ORIGINAL SharedWorker script (all its code runs after our patch)
+      try {
+        importScripts(${JSON.stringify(origUrl)});
+      } catch (e) {
+        // If import fails, surface an error so you notice in DevTools
+        try { console.log("[us100-proxy][worker] importScripts error:", String(e && e.message || e)); } catch(_){}
+      }
+    })();
+  `;
+
+  const ProxySW = function(url, options){
+    try {
+      // Resolve to absolute URL so importScripts works inside the worker
+      const abs = new URL(url, location.href).toString();
+
+      // Build a bootstrap script that imports the original worker and patches port.postMessage
+      const code = mkBootstrap(abs, window.__US100_cfg);
+      const blob = new Blob([code], { type: "application/javascript" });
+      const proxiedUrl = URL.createObjectURL(blob);
+
+      const w = new OrigSW(proxiedUrl, options);
+      // Expose the underlying port exactly like the original
+      return w;
+    } catch (e) {
+      console.log("[us100-proxy] Proxy construction failed, falling back to original:", e);
+      return new OrigSW(url, options);
+    }
+  };
+  ProxySW.prototype = OrigSW.prototype;
+  Object.defineProperty(window, "SharedWorker", { configurable: true, writable: false, value: ProxySW });
+  ProxySW.__us100Proxy__ = true;
+
+  console.log("[us100-proxy] SharedWorker proxy installed; faking", window.__US100_cfg.symbol, "ba ->", window.__US100_cfg.forcedBa);
 })();
 """
 
 @pytest.fixture(autouse=True, scope="function")
-def install_ws_logger(page):
-    page.add_init_script(INIT_SCRIPT)
-    yield
+def install_us100_sharedworker_proxy(context):
+  # Context-level injection ensures we hook BEFORE any workers are created.
+  context.add_init_script(INIT_JS)
+  yield
